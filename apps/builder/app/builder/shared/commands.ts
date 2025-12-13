@@ -1,10 +1,8 @@
-import { nanoid } from "nanoid";
 import {
   blockTemplateComponent,
   elementComponent,
   isComponentDetachable,
 } from "@webstudio-is/sdk";
-import type { Instance } from "@webstudio-is/sdk";
 import { toast } from "@webstudio-is/design-system";
 import { createCommandsEmitter, type Command } from "~/shared/commands-emitter";
 import {
@@ -41,13 +39,13 @@ import {
 } from "./nano-states";
 import { $selectedInstancePath, selectInstance } from "~/shared/awareness";
 import { openCommandPanel } from "../features/command-panel";
+import { showWrapComponentsList } from "../features/command-panel/groups/wrap-group";
 import { builderApi } from "~/shared/builder-api";
 import { getSetting, setSetting } from "./client-settings";
 import { findAvailableVariables } from "~/shared/data-variables";
 import { atom } from "nanostores";
 import {
   findClosestNonTextualContainer,
-  isRichTextContent,
   isTreeSatisfyingContentModel,
 } from "~/shared/content-model";
 import { generateFragmentFromHtml } from "~/shared/html";
@@ -57,6 +55,10 @@ import { getInstanceLabel } from "./instance-label";
 import { $instanceTags } from "../features/style-panel/shared/model";
 import { reactPropsToStandardAttributes } from "@webstudio-is/react-sdk";
 import { isSyncIdle } from "./sync/sync-server";
+import { openDeleteUnusedTokensDialog } from "~/builder/shared/style-source-utils";
+import { openDeleteUnusedDataVariablesDialog } from "~/builder/shared/data-variable-utils";
+import { openDeleteUnusedCssVariablesDialog } from "~/builder/shared/css-variable-utils";
+import { openKeyboardShortcutsDialog } from "~/builder/features/keyboard-shortcuts-dialog";
 
 export const $styleSourceInputElement = atom<HTMLInputElement | undefined>();
 
@@ -147,65 +149,6 @@ export const deleteSelectedInstance = () => {
   });
 };
 
-export const wrapIn = (component: string, tag?: string) => {
-  const instancePath = $selectedInstancePath.get();
-  // global root or body are selected
-  if (instancePath === undefined || instancePath.length === 1) {
-    return;
-  }
-  const [selectedItem, parentItem] = instancePath;
-  const selectedInstance = selectedItem.instance;
-  const newInstanceId = nanoid();
-  const newInstanceSelector = [newInstanceId, ...parentItem.instanceSelector];
-  const metas = $registeredComponentMetas.get();
-  try {
-    updateWebstudioData((data) => {
-      const isContent = isRichTextContent({
-        instanceSelector: selectedItem.instanceSelector,
-        instances: data.instances,
-        props: data.props,
-        metas,
-      });
-      if (isContent) {
-        toast.error(`Cannot wrap textual content`);
-        throw Error("Abort transaction");
-      }
-      const newInstance: Instance = {
-        type: "instance",
-        id: newInstanceId,
-        component,
-        children: [{ type: "id", value: selectedInstance.id }],
-      };
-      if (tag || component === elementComponent) {
-        newInstance.tag = tag ?? "div";
-      }
-      const parentInstance = data.instances.get(parentItem.instance.id);
-      data.instances.set(newInstanceId, newInstance);
-      if (parentInstance) {
-        for (const child of parentInstance.children) {
-          if (child.type === "id" && child.value === selectedInstance.id) {
-            child.value = newInstanceId;
-          }
-        }
-      }
-      const isSatisfying = isTreeSatisfyingContentModel({
-        instances: data.instances,
-        props: data.props,
-        metas,
-        instanceSelector: newInstanceSelector,
-      });
-      if (isSatisfying === false) {
-        const label = getInstanceLabel({ component, tag }, {});
-        toast.error(`Cannot wrap in ${label}`);
-        throw Error("Abort transaction");
-      }
-    });
-    selectInstance(newInstanceSelector);
-  } catch {
-    // do nothing
-  }
-};
-
 export const replaceWith = (component: string, tag?: string) => {
   const instancePath = $selectedInstancePath.get();
   // global root or body are selected
@@ -251,7 +194,7 @@ export const replaceWith = (component: string, tag?: string) => {
         instanceSelector: selectedInstanceSelector,
       });
       if (isSatisfying === false) {
-        const label = getInstanceLabel({ component, tag }, {});
+        const label = getInstanceLabel({ component, tag });
         toast.error(`Cannot replace with ${label}`);
         throw Error("Abort transaction");
       }
@@ -324,7 +267,10 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "cancelCurrentDrag",
+      label: "Deselect",
+      description: "Cancel drag or deselect",
       hidden: true,
+      category: "General",
       defaultHotkeys: ["escape"],
       // radix check event.defaultPrevented before invoking callbacks
       preventDefault: false,
@@ -335,6 +281,7 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "clickCanvas",
+      description: "Click on canvas",
       hidden: true,
       handler: () => {
         $breakpointsMenuView.set(undefined);
@@ -346,6 +293,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "togglePreviewMode",
+      description: "Preview mode",
+      category: "Top bar",
       defaultHotkeys: ["meta+shift+p", "ctrl+shift+p"],
       handler: () => {
         setActiveSidebarPanel("auto");
@@ -354,6 +303,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleDesignMode",
+      description: "Toggle design mode",
+      category: "Top bar",
       defaultHotkeys: ["meta+shift+d", "ctrl+shift+d"],
       handler: () => {
         setActiveSidebarPanel("auto");
@@ -362,6 +313,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleContentMode",
+      description: "Toggle content mode",
+      category: "Top bar",
       defaultHotkeys: ["meta+shift+c", "ctrl+shift+c"],
       handler: () => {
         setActiveSidebarPanel("auto");
@@ -370,12 +323,15 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "openBreakpointsMenu",
+      description: "Manage responsive breakpoints",
       handler: () => {
         $breakpointsMenuView.set("initial");
       },
     },
     {
       name: "openPublishDialog",
+      description: "Deploy your project",
+      category: "Top bar",
       defaultHotkeys: ["shift+P"],
       handler: () => {
         $publishDialog.set("publish");
@@ -384,6 +340,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "openExportDialog",
+      description: "Export project code",
+      category: "General",
       defaultHotkeys: ["shift+E"],
       handler: () => {
         $publishDialog.set("export");
@@ -392,6 +350,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleComponentsPanel",
+      description: "Toggle components panel",
+      category: "Panels",
       defaultHotkeys: ["a"],
       handler: () => {
         if ($isDesignMode.get() === false) {
@@ -406,6 +366,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleNavigatorPanel",
+      description: "Toggle navigator panel",
+      category: "Panels",
       defaultHotkeys: ["z"],
       handler: () => {
         toggleActiveSidebarPanel("navigator");
@@ -414,6 +376,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "openStylePanel",
+      description: "Open style panel",
+      category: "Panels",
       defaultHotkeys: ["s"],
       handler: () => {
         if ($isDesignMode.get() === false) {
@@ -428,6 +392,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "focusStyleSources",
+      description: "Focus style sources input",
+      category: "Style panel",
       defaultHotkeys: ["meta+enter", "ctrl+enter"],
       handler: () => {
         if ($isDesignMode.get() === false) {
@@ -445,6 +411,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleStylePanelFocusMode",
+      description: "Toggle style panel focus mode",
+      category: "Style panel",
       defaultHotkeys: ["alt+shift+s"],
       handler: () => {
         setSetting(
@@ -456,6 +424,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "toggleStylePanelAdvancedMode",
+      description: "Toggle style panel advanced mode",
+      category: "Style panel",
       defaultHotkeys: ["alt+shift+a"],
       handler: () => {
         setSetting(
@@ -467,6 +437,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "openSettingsPanel",
+      description: "Open settings panel",
+      category: "Panels",
       defaultHotkeys: ["d"],
       handler: () => {
         $activeInspectorPanel.set("settings");
@@ -482,23 +454,11 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     makeBreakpointCommand("selectBreakpoint7", 7),
     makeBreakpointCommand("selectBreakpoint8", 8),
     makeBreakpointCommand("selectBreakpoint9", 9),
-    /*
-    // @todo: decide about keyboard shortcut, uncomment when ready
-    {
-      name: "toggleAiCommandBar",
-      defaultHotkeys: ["space"],
-      // this disables hotkey for inputs on style panel
-      // but still work for input on canvas which call event.preventDefault() in keydown handler
-      disableOnInputLikeControls: true,
-      handler: () => {
-        $isAiCommandBarVisible.set($isAiCommandBarVisible.get() === false);
-      },
-    },
-    */
-
     {
       name: "deleteInstanceBuilder",
       label: "Delete Instance",
+      description: "Delete selected instance",
+      category: "Navigator",
       defaultHotkeys: ["backspace", "delete"],
       // See "deleteInstanceCanvas" for details on why the command is separated for the canvas and builder.
       disableHotkeyOutsideApp: true,
@@ -507,6 +467,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "duplicateInstance",
+      description: "Duplicate selected instance",
+      category: "Navigator",
       defaultHotkeys: ["meta+d", "ctrl+d"],
       handler: () => {
         const project = $project.get();
@@ -565,6 +527,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "editInstanceLabel",
+      description: "Edit instance label",
+      category: "Navigator",
       defaultHotkeys: ["meta+e", "ctrl+e"],
       handler: () => {
         const instancePath = $selectedInstancePath.get();
@@ -576,33 +540,36 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
       },
     },
     {
-      name: "wrapInElement",
-      label: "Wrap in an Element",
-      handler: () => wrapIn(elementComponent),
-    },
-    {
-      name: "wrapInLink",
-      label: "Wrap in a Link",
-      handler: () => wrapIn(elementComponent, "a"),
+      name: "wrap",
+      label: "Wrap",
+      description: "Wrap",
+      keepCommandPanelOpen: true,
+      handler: () => {
+        showWrapComponentsList();
+      },
     },
     {
       name: "unwrap",
+      description: "Remove parent wrapper",
       handler: () => unwrap(),
     },
     {
       name: "replaceWithElement",
       label: "Replace with an Element",
+      description: "Replace with element",
       handler: () => replaceWith(elementComponent),
     },
     {
       name: "replaceWithLink",
       label: "Replace with a Link",
+      description: "Replace with link",
       handler: () => replaceWith(elementComponent, "a"),
     },
 
     {
       name: "pasteTailwind",
       label: "Paste HTML with Tailwind classes",
+      description: "Convert Tailwind to CSS",
       handler: async () => {
         const html = await navigator.clipboard.readText();
         let fragment = generateFragmentFromHtml(html);
@@ -616,6 +583,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "undo",
+      description: "Undo last action",
+      category: "General",
       // safari use meta+z to reopen closed tabs, here added ctrl as alternative
       defaultHotkeys: ["meta+z", "ctrl+z"],
       disableOnInputLikeControls: true,
@@ -625,6 +594,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     },
     {
       name: "redo",
+      description: "Redo last action",
+      category: "General",
       // safari use meta+z to reopen closed tabs, here added ctrl as alternative
       defaultHotkeys: ["meta+shift+z", "ctrl+shift+z"],
       disableOnInputLikeControls: true,
@@ -635,6 +606,8 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "save",
+      description: "Save project",
+      category: "General",
       defaultHotkeys: ["meta+s", "ctrl+s"],
       handler: async () => {
         toast.dismiss("save-success");
@@ -651,12 +624,51 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "openCommandPanel",
-      hidden: true,
+      description: "Open command panel",
+      category: "General",
       defaultHotkeys: ["meta+k", "ctrl+k"],
       handler: () => {
         if ($isDesignMode.get()) {
           openCommandPanel();
         }
+      },
+    },
+
+    {
+      name: "deleteUnusedTokens",
+      label: "Delete unused tokens",
+      description: "Remove unused tokens",
+      handler: () => {
+        openDeleteUnusedTokensDialog();
+      },
+    },
+
+    {
+      name: "deleteUnusedDataVariables",
+      label: "Delete unused data variables",
+      description: "Remove unused data variables",
+      handler: () => {
+        openDeleteUnusedDataVariablesDialog();
+      },
+    },
+
+    {
+      name: "deleteUnusedCssVariables",
+      label: "Delete unused CSS variables",
+      description: "Remove unused CSS variables",
+      handler: () => {
+        openDeleteUnusedCssVariablesDialog();
+      },
+    },
+
+    {
+      name: "openKeyboardShortcuts",
+      description: "View keyboard shortcuts",
+      category: "General",
+      defaultHotkeys: ["shift+?"],
+      disableOnInputLikeControls: true,
+      handler: () => {
+        openKeyboardShortcutsDialog();
       },
     },
   ],

@@ -23,7 +23,11 @@ import type {
   WebstudioFragment,
   WsComponentMeta,
 } from "@webstudio-is/sdk";
-import { coreMetas, portalComponent } from "@webstudio-is/sdk";
+import {
+  coreMetas,
+  portalComponent,
+  elementComponent,
+} from "@webstudio-is/sdk";
 import type { StyleProperty, StyleValue } from "@webstudio-is/css-engine";
 import {
   deleteInstanceMutable,
@@ -35,6 +39,8 @@ import {
   findClosestInsertable,
   insertWebstudioFragmentAt,
   insertWebstudioElementAt,
+  buildInstancePath,
+  wrapIn,
 } from "./instance-utils";
 import {
   $assets,
@@ -1010,6 +1016,95 @@ describe("delete instance", () => {
   });
 });
 
+describe("wrap in", () => {
+  test("wrap instance in link", () => {
+    $instances.set(
+      renderData(
+        <ws.element ws:tag="body" ws:id="bodyId">
+          <ws.element ws:tag="div" ws:id="divId"></ws.element>
+        </ws.element>
+      ).instances
+    );
+    selectInstance(["divId", "bodyId"]);
+    wrapIn(elementComponent, "a");
+    expect($instances.get()).toEqual(
+      renderData(
+        <ws.element ws:tag="body" ws:id="bodyId">
+          <ws.element ws:tag="a" ws:id={expect.any(String)}>
+            <ws.element ws:tag="div" ws:id="divId"></ws.element>
+          </ws.element>
+        </ws.element>
+      ).instances
+    );
+  });
+
+  test("wrap image in element", () => {
+    $instances.set(
+      renderData(
+        <ws.element ws:tag="body" ws:id="bodyId">
+          <ws.element ws:tag="img" ws:id="imageId"></ws.element>
+        </ws.element>
+      ).instances
+    );
+    selectInstance(["imageId", "bodyId"]);
+    wrapIn(elementComponent);
+    expect($instances.get()).toEqual(
+      renderData(
+        <ws.element ws:tag="body" ws:id="bodyId">
+          <ws.element ws:tag="div" ws:id={expect.any(String)}>
+            <ws.element ws:tag="img" ws:id="imageId"></ws.element>
+          </ws.element>
+        </ws.element>
+      ).instances
+    );
+  });
+
+  test("avoid wrapping text with link in link", () => {
+    const { instances } = renderData(
+      <ws.element ws:tag="body" ws:id="bodyId">
+        <ws.element ws:tag="p" ws:id="textId">
+          <ws.element ws:tag="a" ws:id="linkId"></ws.element>
+        </ws.element>
+      </ws.element>
+    );
+    $instances.set(instances);
+    selectInstance(["textId", "bodyId"]);
+    wrapIn(elementComponent, "a");
+    // nothing is changed
+    expect($instances.get()).toEqual(instances);
+  });
+
+  test("avoid wrapping textual content", () => {
+    const { instances } = renderData(
+      <ws.element ws:tag="body" ws:id="bodyId">
+        <ws.element ws:tag="div" ws:id="textId">
+          <ws.element ws:tag="bold" ws:id="boldId"></ws.element>
+        </ws.element>
+      </ws.element>
+    );
+    $instances.set(instances);
+    selectInstance(["boldId", "textId", "bodyId"]);
+    wrapIn(elementComponent);
+    // nothing is changed
+    expect($instances.get()).toEqual(instances);
+  });
+
+  test("avoid wrapping list item", () => {
+    const { instances } = renderData(
+      <ws.element ws:tag="body" ws:id="bodyId">
+        <ws.element ws:tag="ul" ws:id="listId">
+          <ws.element ws:tag="li" ws:id="listItemId"></ws.element>
+        </ws.element>
+      </ws.element>
+    );
+    $instances.set(instances);
+    selectInstance(["listItemId", "listId", "bodyId"]);
+    wrapIn(elementComponent);
+    // nothing is changed
+    expect($instances.get()).toEqual(instances);
+  });
+});
+
 describe("extract webstudio fragment", () => {
   test("collect all styles and breakpoints bound to fragment instances", () => {
     // body
@@ -1604,4 +1699,91 @@ describe("find closest insertable", () => {
 
 test("get undefined instead of instance path when no instances found", () => {
   expect(getInstancePath(["boxId"], new Map())).toEqual(undefined);
+});
+
+describe("buildInstancePath", () => {
+  const createPages = () =>
+    createDefaultPages({
+      homePageId: "homePageId",
+      rootInstanceId: "rootId",
+      systemDataSourceId: "systemId",
+    });
+
+  test("returns empty array when instance has no selector", () => {
+    const pages = createPages();
+    const instances = new Map();
+
+    const result = buildInstancePath("nonexistent", pages, instances);
+    expect(result).toEqual([]);
+  });
+
+  test("returns empty array for root instance (no ancestors)", () => {
+    const { instances } = renderData(
+      <$.Body ws:id="rootId">
+        <$.Box ws:id="boxId"></$.Box>
+      </$.Body>
+    );
+    const pages = createPages();
+
+    const result = buildInstancePath("rootId", pages, instances);
+    expect(result).toEqual([]);
+  });
+
+  test("builds path for single-level nesting", () => {
+    const { instances } = renderData(
+      <$.Body ws:id="rootId">
+        <$.Box ws:id="boxId"></$.Box>
+      </$.Body>
+    );
+    const pages = createPages();
+
+    const result = buildInstancePath("boxId", pages, instances);
+    expect(result).toEqual(["Body"]);
+  });
+
+  test("builds path for multi-level nesting", () => {
+    const { instances } = renderData(
+      <$.Body ws:id="rootId">
+        <$.Box ws:id="containerId">
+          <$.Heading ws:id="headingId"></$.Heading>
+        </$.Box>
+      </$.Body>
+    );
+    const pages = createPages();
+
+    const result = buildInstancePath("headingId", pages, instances);
+    expect(result).toEqual(["Body", "Box"]);
+  });
+
+  test("builds path for deeply nested instance", () => {
+    const { instances } = renderData(
+      <$.Body ws:id="rootId">
+        <$.Box ws:id="sectionId">
+          <$.Box ws:id="articleId">
+            <$.Box ws:id="divId">
+              <$.Text ws:id="textId"></$.Text>
+            </$.Box>
+          </$.Box>
+        </$.Box>
+      </$.Body>
+    );
+    const pages = createPages();
+
+    const result = buildInstancePath("textId", pages, instances);
+    expect(result).toEqual(["Body", "Box", "Box", "Box"]);
+  });
+
+  test("handles instances with custom labels", () => {
+    const { instances } = renderData(
+      <$.Body ws:id="rootId" ws:label="Main Body">
+        <$.Box ws:id="navId" ws:label="Navigation">
+          <$.Link ws:id="linkId" ws:label="Home Link"></$.Link>
+        </$.Box>
+      </$.Body>
+    );
+    const pages = createPages();
+
+    const result = buildInstancePath("linkId", pages, instances);
+    expect(result).toEqual(["Main Body", "Navigation"]);
+  });
 });

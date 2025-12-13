@@ -1,6 +1,5 @@
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -25,12 +24,12 @@ import {
 import { SearchIcon } from "@webstudio-is/icons";
 import { styled, theme } from "../stitches.config";
 import { Text, textVariants } from "./text";
-import { Flex } from "./flex";
 import { Button } from "./button";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
 import { Kbd } from "./kbd";
+import { useDebounceEffect } from "../utilities";
 
-const panelWidth = "400px";
+const panelWidth = "500px";
 const itemHeight = "32px";
 const inputBorderBottomSize = "--command-input-border-bottom-width";
 
@@ -86,6 +85,13 @@ export const useSelectedAction = () => {
   return state.actions[state.actionIndex];
 };
 
+export const useResetActionIndex = () => {
+  const [, setState] = useContext(CommandContext);
+  return () => {
+    setState((prev) => ({ ...prev, actionIndex: 0 }));
+  };
+};
+
 export const Command = (props: CommandProps) => {
   const state = useState<CommandState>({
     highlightedGroup: "",
@@ -94,7 +100,12 @@ export const Command = (props: CommandProps) => {
   });
   return (
     <CommandContext.Provider value={state}>
-      <StyledCommand loop={true} filter={lowerCasedFilter} {...props} />
+      <StyledCommand
+        disablePointerSelection
+        loop={true}
+        filter={lowerCasedFilter}
+        {...props}
+      />
     </CommandContext.Provider>
   );
 };
@@ -156,18 +167,26 @@ const CommandInputField = styled(CommandPrimitive.Input, {
 });
 
 export const CommandInput = (
-  props: ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
+  props: ComponentPropsWithoutRef<typeof CommandPrimitive.Input> & {
+    action?: string;
+    placeholder?: string;
+  }
 ) => {
   const inputRef = useRef<HTMLInputElement>(null);
-  const action = useSelectedAction();
+  const contextAction = useSelectedAction();
+  const {
+    action = contextAction,
+    placeholder = "Type a command or search...",
+    ...inputProps
+  } = props;
   return (
     <CommandInputContainer>
       <CommandInputIcon />
       <CommandInputField
         ref={inputRef}
         autoFocus={true}
-        placeholder="Type a command or search..."
-        {...props}
+        placeholder={placeholder}
+        {...inputProps}
         onValueChange={(value) => {
           // reset scroll whenever search is changed
           requestAnimationFrame(() => {
@@ -176,7 +195,7 @@ export const CommandInput = (
               ?.querySelector("[data-radix-scroll-area-viewport]")
               ?.scrollTo(0, 0);
           });
-          props.onValueChange?.(value);
+          inputProps.onValueChange?.(value);
         }}
       />
       <Text
@@ -191,20 +210,6 @@ export const CommandInput = (
 };
 
 const ActionsCommand = styled(CommandPrimitive, {});
-
-const useDebounceEffect = () => {
-  const [updateCallback, setUpdateCallback] = useState(() => () => {
-    /* empty */
-  });
-  useEffect(() => {
-    // Because of how our styles works we need to update after React render to be sure that
-    // all styles are applied
-    updateCallback();
-  }, [updateCallback]);
-  return useCallback((callback: () => void) => {
-    setUpdateCallback(() => callback);
-  }, []);
-};
 
 export const CommandFooter = () => {
   const [isActionOpen, setIsActionOpen] = useState(false);
@@ -252,12 +257,7 @@ export const CommandFooter = () => {
   }, [setState]);
 
   return (
-    <Flex
-      justify="end"
-      align="center"
-      css={{ height: itemHeight, paddingInline: theme.spacing[3] }}
-      ref={actionsRef}
-    >
+    <CommandGroupFooter ref={actionsRef}>
       <Popover open={isActionOpen} onOpenChange={setIsActionOpen}>
         <PopoverTrigger asChild>
           <Button tabIndex={-1} color="ghost" data-action-trigger>
@@ -276,7 +276,7 @@ export const CommandFooter = () => {
             }
           }}
         >
-          <ActionsCommand>
+          <ActionsCommand disablePointerSelection loop>
             <CommandInputContainer>
               <CommandInputField placeholder="Choose action..." />
             </CommandInputContainer>
@@ -284,6 +284,7 @@ export const CommandFooter = () => {
               {state.actions.map((action, actionIndex) => (
                 <CommandItem
                   key={action}
+                  allowSingleClick
                   onSelect={() => {
                     setState((prev) => ({ ...prev, actionIndex }));
                     setIsActionOpen(false);
@@ -306,7 +307,7 @@ export const CommandFooter = () => {
           </ActionsCommand>
         </PopoverContent>
       </Popover>
-    </Flex>
+    </CommandGroupFooter>
   );
 };
 
@@ -334,6 +335,76 @@ export const CommandGroup = ({
   );
 };
 
+export const CommandItem = ({
+  onSelect,
+  allowSingleClick,
+  ...props
+}: ComponentPropsWithoutRef<typeof CommandItemStyled> & {
+  onSelect?: () => void;
+  allowSingleClick?: boolean;
+}) => {
+  const doubleClickedRef = useRef(false);
+  const selectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const pointerDownRef = useRef(false);
+
+  const handleSelect = () => {
+    // Actions menu mode - execute immediately
+    if (allowSingleClick) {
+      onSelect?.();
+      return;
+    }
+
+    // Default mode
+    if (selectTimeoutRef.current) {
+      clearTimeout(selectTimeoutRef.current);
+    }
+
+    // If double-click already happened, skip (it already executed)
+    if (doubleClickedRef.current) {
+      doubleClickedRef.current = false;
+      return;
+    }
+
+    // If triggered by Enter key (no pointer down), execute immediately
+    if (!pointerDownRef.current) {
+      onSelect?.();
+      return;
+    }
+
+    // For mouse clicks, delay to detect double-click
+    selectTimeoutRef.current = setTimeout(() => {
+      // Reset pointer flag after delay
+      pointerDownRef.current = false;
+    }, 300);
+  };
+
+  return (
+    <CommandItemStyled
+      {...props}
+      onPointerDown={
+        allowSingleClick
+          ? undefined
+          : () => {
+              pointerDownRef.current = true;
+            }
+      }
+      onDoubleClick={
+        allowSingleClick
+          ? undefined
+          : () => {
+              // Mark that double-click happened and execute immediately
+              doubleClickedRef.current = true;
+              if (selectTimeoutRef.current) {
+                clearTimeout(selectTimeoutRef.current);
+              }
+              onSelect?.();
+            }
+      }
+      onSelect={handleSelect}
+    />
+  );
+};
+
 export const CommandGroupHeading = styled("div", {
   ...textVariants.titles,
   color: theme.colors.foregroundMoreSubtle,
@@ -344,14 +415,29 @@ export const CommandGroupHeading = styled("div", {
   height: itemHeight,
 });
 
-export const CommandItem = styled(CommandPrimitive.Item, {
+export const CommandGroupFooter = styled("div", {
+  ...textVariants.titles,
+  color: theme.colors.foregroundMoreSubtle,
+  display: "flex",
+  gap: theme.spacing[5],
+  alignItems: "center",
+  paddingInline: theme.spacing[5],
+  height: itemHeight,
+  justifyContent: "end",
+  borderTop: `1px solid ${theme.colors.borderMain}`,
+});
+
+const CommandItemStyled = styled(CommandPrimitive.Item, {
   display: "grid",
   gridTemplateColumns: `1fr max-content`,
   alignItems: "center",
   minHeight: itemHeight,
   paddingInline: theme.spacing[9],
+  "&:hover": {
+    backgroundColor: theme.colors.backgroundItemMenuItemHover,
+  },
   "&[aria-selected=true]": {
-    backgroundColor: theme.colors.backgroundHover,
+    backgroundColor: theme.colors.backgroundItemCurrent,
   },
 });
 

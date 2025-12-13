@@ -18,6 +18,7 @@ import {
   type WebstudioData,
   type Resource,
   type WsComponentMeta,
+  type Pages,
   getStyleDeclKey,
   findTreeInstanceIds,
   findTreeInstanceIdsExcludingSlotDescendants,
@@ -63,6 +64,7 @@ import {
   $awareness,
   $selectedInstancePath,
   $selectedPage,
+  findAwarenessByInstanceId,
   getInstancePath,
   selectInstance,
   type InstancePath,
@@ -77,6 +79,7 @@ import {
   findClosestNonTextualContainer,
   isRichTextTree,
   isTreeSatisfyingContentModel,
+  isRichTextContent,
 } from "./content-model";
 import type { Project } from "@webstudio-is/project";
 import { getInstanceLabel } from "~/builder/shared/instance-label";
@@ -605,6 +608,69 @@ export const deleteInstanceMutable = (
     }
   }
   return true;
+};
+
+export const wrapIn = (component: string, tag?: string) => {
+  const instancePath = $selectedInstancePath.get();
+  // global root or body are selected
+  if (instancePath === undefined || instancePath.length === 1) {
+    return;
+  }
+  const [selectedItem, parentItem] = instancePath;
+  const selectedInstance = selectedItem.instance;
+  const newInstanceId = nanoid();
+  const newInstanceSelector = [newInstanceId, ...parentItem.instanceSelector];
+  const metas = $registeredComponentMetas.get();
+
+  try {
+    updateWebstudioData((data) => {
+      const isContent = isRichTextContent({
+        instanceSelector: selectedItem.instanceSelector,
+        instances: data.instances,
+        props: data.props,
+        metas,
+      });
+      if (isContent) {
+        toast.error(`Cannot wrap textual content`);
+        throw Error("Abort transaction");
+      }
+      const newInstance: Instance = {
+        type: "instance",
+        id: newInstanceId,
+        component,
+        children: [{ type: "id", value: selectedInstance.id }],
+      };
+
+      if (tag || component === elementComponent) {
+        newInstance.tag = tag ?? "div";
+      }
+      const parentInstance = data.instances.get(parentItem.instance.id);
+      data.instances.set(newInstanceId, newInstance);
+      if (parentInstance) {
+        for (const child of parentInstance.children) {
+          if (child.type === "id" && child.value === selectedInstance.id) {
+            child.value = newInstanceId;
+          }
+        }
+      }
+
+      const isSatisfying = isTreeSatisfyingContentModel({
+        instances: data.instances,
+        props: data.props,
+        metas,
+        instanceSelector: newInstanceSelector,
+      });
+
+      if (isSatisfying === false) {
+        const label = getInstanceLabel({ component, tag });
+        toast.error(`Cannot wrap in ${label}`);
+        throw Error("Abort transaction");
+      }
+    });
+    selectInstance(newInstanceSelector);
+  } catch {
+    // do nothing
+  }
 };
 
 const traverseStyleValue = (
@@ -1348,7 +1414,7 @@ export const findClosestInsertable = (
     fragment,
     onError: (message) => {
       const component = fragment.instances[0].component;
-      const label = getInstanceLabel({ component }, {});
+      const label = getInstanceLabel({ component });
       toast.warn(message || `"${label}" has no place here`);
     },
   });
@@ -1383,4 +1449,36 @@ export const findClosestInsertable = (
     parentSelector,
     position: lastChildPosition + 1,
   };
+};
+
+/**
+ * Build the ancestor path array for an instance.
+ * Returns an array of labels for all ancestors from root to parent.
+ */
+export const buildInstancePath = (
+  instanceId: Instance["id"],
+  pages: Pages,
+  instances: Instances
+): string[] => {
+  const awareness = findAwarenessByInstanceId(pages, instances, instanceId);
+  if (!awareness.instanceSelector) {
+    return [];
+  }
+
+  const instancePath = getInstancePath(
+    awareness.instanceSelector,
+    instances,
+    undefined,
+    undefined
+  );
+
+  if (!instancePath) {
+    return [];
+  }
+
+  return instancePath
+    .slice()
+    .reverse()
+    .slice(0, -1) // Remove the instance itself (last element after reverse), keep only ancestors
+    .map(({ instance }) => getInstanceLabel(instance));
 };
